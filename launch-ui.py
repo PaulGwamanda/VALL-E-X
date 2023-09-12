@@ -1,3 +1,4 @@
+# coding: utf-8
 import argparse
 import logging
 import os
@@ -6,6 +7,12 @@ import time
 import tempfile
 import platform
 import webbrowser
+import sys
+print(f"default encoding is {sys.getdefaultencoding()},file system encoding is {sys.getfilesystemencoding()}")
+print(f"You are using Python version {platform.python_version()}")
+if(sys.version_info[0]<3 or sys.version_info[1]<7):
+    print("The Python version is too low and may cause problems")
+
 if platform.system().lower() == 'windows':
     temp = pathlib.PosixPath
     pathlib.PosixPath = pathlib.WindowsPath
@@ -39,6 +46,7 @@ from examples import *
 
 import gradio as gr
 import whisper
+from vocos import Vocos
 import multiprocessing
 
 thread_count = multiprocessing.cpu_count()
@@ -62,9 +70,16 @@ if torch.cuda.is_available():
 if not os.path.exists("./checkpoints/"): os.mkdir("./checkpoints/")
 if not os.path.exists(os.path.join("./checkpoints/", "vallex-checkpoint.pt")):
     import wget
-    logging.info("Downloading model from https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt ...")
-    # download from https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt to ./checkpoints/vallex-checkpoint.pt
-    wget.download("https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt", out="./checkpoints/vallex-checkpoint.pt", bar=wget.bar_adaptive)
+    try:
+        logging.info("Downloading model from https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt ...")
+        # download from https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt to ./checkpoints/vallex-checkpoint.pt
+        wget.download("https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt",
+                      out="./checkpoints/vallex-checkpoint.pt", bar=wget.bar_adaptive)
+    except Exception as e:
+        logging.info(e)
+        raise Exception(
+            "\n Model weights download failed, please go to 'https://huggingface.co/Plachta/VALL-E-X/resolve/main/vallex-checkpoint.pt'"
+            "\n manually download model weights and put it to {} .".format(os.getcwd() + "\checkpoints"))
 
 model = VALLE(
         N_DIM,
@@ -88,9 +103,19 @@ model.eval()
 # Encodec model
 audio_tokenizer = AudioTokenizer(device)
 
+# Vocos decoder
+vocos = Vocos.from_pretrained('charactr/vocos-encodec-24khz').to(device)
+
 # ASR
 if not os.path.exists("./whisper/"): os.mkdir("./whisper/")
-whisper_model = whisper.load_model("medium",download_root=os.path.join(os.getcwd(), "whisper")).cpu()
+try:
+    whisper_model = whisper.load_model("medium",download_root=os.path.join(os.getcwd(), "whisper")).cpu()
+except Exception as e:
+    logging.info(e)
+    raise Exception(
+        "\n Whisper download failed or damaged, please go to "
+        "'https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt'"
+        "\n manually download model and put it to {} .".format(os.getcwd() + "\whisper"))
 
 # Voice Presets
 preset_list = os.walk("./presets/").__next__()[2]
@@ -190,7 +215,7 @@ def make_prompt(name, wav, sr, save=True):
     lang, text = transcribe_one(whisper_model, f"./prompts/{name}.wav")
     lang_token = lang2token[lang]
     text = lang_token + text + lang_token
-    with open(f"./prompts/{name}.txt", 'w') as f:
+    with open(f"./prompts/{name}.txt", 'w', encoding='utf-8') as f:
         f.write(text)
     if not save:
         os.remove(f"./prompts/{name}.wav")
@@ -203,7 +228,6 @@ def make_prompt(name, wav, sr, save=True):
 @torch.no_grad()
 def infer_from_audio(text, language, accent, audio_prompt, record_audio_prompt, transcript_content):
     global model, text_collater, text_tokenizer, audio_tokenizer
-    model.to(device)
     audio_prompt = audio_prompt if audio_prompt is not None else record_audio_prompt
     sr, wav_pr = audio_prompt
     if not isinstance(wav_pr, torch.FloatTensor):
@@ -266,17 +290,19 @@ def infer_from_audio(text, language, accent, audio_prompt, record_audio_prompt, 
         temperature=1,
         prompt_language=lang_pr,
         text_language=langs if accent == "no-accent" else lang,
+        best_of=5,
     )
-    samples = audio_tokenizer.decode(
-        [(encoded_frames.transpose(2, 1), None)]
-    )
+    # Decode with Vocos
+    frames = encoded_frames.permute(2,0,1)
+    features = vocos.codes_to_features(frames)
+    samples = vocos.decode(features, bandwidth_id=torch.tensor([2], device=device))
 
     # offload model
     model.to('cpu')
     torch.cuda.empty_cache()
 
     message = f"text prompt: {text_pr}\nsythesized text: {text}"
-    return message, (24000, samples[0][0].cpu().numpy())
+    return message, (24000, samples.squeeze(0).cpu().numpy())
 
 @torch.no_grad()
 def infer_from_prompt(text, language, accent, preset_prompt, prompt_file):
@@ -325,15 +351,18 @@ def infer_from_prompt(text, language, accent, preset_prompt, prompt_file):
         temperature=1,
         prompt_language=lang_pr,
         text_language=langs if accent == "no-accent" else lang,
+        best_of=5,
     )
-    samples = audio_tokenizer.decode(
-        [(encoded_frames.transpose(2, 1), None)]
-    )
+    # Decode with Vocos
+    frames = encoded_frames.permute(2,0,1)
+    features = vocos.codes_to_features(frames)
+    samples = vocos.decode(features, bandwidth_id=torch.tensor([2], device=device))
+
     model.to('cpu')
     torch.cuda.empty_cache()
 
     message = f"sythesized text: {text}"
-    return message, (24000, samples[0][0].cpu().numpy())
+    return message, (24000, samples.squeeze(0).cpu().numpy())
 
 
 from utils.sentence_cutter import split_text_into_sentences
@@ -413,14 +442,17 @@ def infer_long_text(text, preset_prompt, prompt=None, language='auto', accent='n
                 temperature=1,
                 prompt_language=lang_pr,
                 text_language=langs if accent == "no-accent" else lang,
+                best_of=5,
             )
             complete_tokens = torch.cat([complete_tokens, encoded_frames.transpose(2, 1)], dim=-1)
-        samples = audio_tokenizer.decode(
-            [(complete_tokens, None)]
-        )
+        # Decode with Vocos
+        frames = complete_tokens.permute(1, 0, 2)
+        features = vocos.codes_to_features(frames)
+        samples = vocos.decode(features, bandwidth_id=torch.tensor([2], device=device))
+
         model.to('cpu')
         message = f"Cut into {len(sentences)} sentences"
-        return message, (24000, samples[0][0].cpu().numpy())
+        return message, (24000, samples.squeeze(0).cpu().numpy())
     elif mode == "sliding-window":
         complete_tokens = torch.zeros([1, NUM_QUANTIZERS, 0]).type(torch.LongTensor).to(device)
         original_audio_prompts = audio_prompts
@@ -454,6 +486,7 @@ def infer_long_text(text, preset_prompt, prompt=None, language='auto', accent='n
                 temperature=1,
                 prompt_language=lang_pr,
                 text_language=langs if accent == "no-accent" else lang,
+                best_of=5,
             )
             complete_tokens = torch.cat([complete_tokens, encoded_frames.transpose(2, 1)], dim=-1)
             if torch.rand(1) < 1.0:
@@ -462,18 +495,20 @@ def infer_long_text(text, preset_prompt, prompt=None, language='auto', accent='n
             else:
                 audio_prompts = original_audio_prompts
                 text_prompts = original_text_prompts
-        samples = audio_tokenizer.decode(
-            [(complete_tokens, None)]
-        )
+        # Decode with Vocos
+        frames = complete_tokens.permute(1, 0, 2)
+        features = vocos.codes_to_features(frames)
+        samples = vocos.decode(features, bandwidth_id=torch.tensor([2], device=device))
+
         model.to('cpu')
         message = f"Cut into {len(sentences)} sentences"
-        return message, (24000, samples[0][0].cpu().numpy())
+        return message, (24000, samples.squeeze(0).cpu().numpy())
     else:
         raise ValueError(f"No such mode {mode}")
 
 
 def main():
-    app = gr.Blocks()
+    app = gr.Blocks(title="VALL-E X")
     with app:
         gr.Markdown(top_md)
         with gr.Tab("Infer from audio"):
@@ -484,7 +519,7 @@ def main():
                     textbox = gr.TextArea(label="Text",
                                           placeholder="Type your sentence here",
                                           value="Welcome back, Master. What can I do for you today?", elem_id=f"tts-input")
-                    language_dropdown = gr.Dropdown(choices=['auto-detect', 'English', '中文', '日本語'], value='auto-detect', label='auto-detect')
+                    language_dropdown = gr.Dropdown(choices=['auto-detect', 'English', '中文', '日本語'], value='auto-detect', label='language')
                     accent_dropdown = gr.Dropdown(choices=['no-accent', 'English', '中文', '日本語'], value='no-accent', label='accent')
                     textbox_transcript = gr.TextArea(label="Transcript",
                                           placeholder="Write transcript here. (leave empty to use whisper)",
