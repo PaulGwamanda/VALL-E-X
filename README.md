@@ -39,7 +39,7 @@ More details about the model are presented in [model card](./model-card.md).
 - Pretrained VALL-E X checkpoint is now released. Download it [here](https://drive.google.com/file/d/10gdQWvP-K_e1undkvv0p2b7SU6I4Egyl/view?usp=sharing)
 
 ## 💻 Installation
-### Install with pip, recommended with Python 3.10, CUDA 11.7 ~ 12.0, PyTorch 2.0+
+### Install with pip, Python 3.10, CUDA 11.7 ~ 12.0, PyTorch 2.0+
 ```commandline
 git clone https://github.com/Plachtaa/VALL-E-X.git
 cd VALL-E-X
@@ -308,6 +308,9 @@ Comparing to [Bark](https://github.com/suno-ai/bark):
 | Chinese, simplified (zh) | ✅ |
 
 ## ❓ FAQ
+
+#### Where is code for training?
+* [lifeiteng's vall-e](https://github.com/lifeiteng/vall-e) has almost everything. There is no plan to release our training code because there is no difference between lifeiteng's implementation.
 
 #### Where can I download the model checkpoint?
 * We use `wget` to download the model to directory `./checkpoints/` when you run the program for the first time.
